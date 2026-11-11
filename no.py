@@ -2,6 +2,21 @@ from enum import StrEnum
 import time
 
 estado = StrEnum('estado', ['seguidor', 'candidato', 'lider'])
+quorum = 3
+tempo_heartbeat = 0.1
+tempo_eleicao = 0.15
+
+class No:
+    def __init__(self, id):
+        self.id = id
+        self.estado_atual = estado.seguidor
+        self.termo_atual = 0
+        self.indice_log = set()
+        self.indice_commit = 0
+        self.lider = None
+        self.ultimo_heartbeat = time.time()
+        self.votos_recebidos = 0
+    
 
 '''
 cada nó armazena:

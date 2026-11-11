@@ -1,0 +1,30 @@
+service No {
+    rpc RequestVote (VoteRequest) returns (VoteResponse);
+    rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message VoteRequest {
+    int32 termo = 1;
+    int32 indice_log = 2;
+}
+
+message VoteResponse {
+    bool voto = 1;
+}
+
+message HeartbeatRequest {
+    int32 termo = 1;
+    int32 indice_log = 2;
+}
+
+message HeartbeatResponse {
+    int32 termo = 1;
+    int32 indice_log = 2;
+    repeated Log logs = 3;
+}
+
+message Log {
+    int32 termo = 1;
+    int32 indice = 2;
+    string comando = 3;
+}
