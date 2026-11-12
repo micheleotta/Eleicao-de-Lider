@@ -1,12 +1,19 @@
-from enum import StrEnum
 import time
+import argparse
+import grpc
+
+from concurrent import futures
+from enum import StrEnum
+from protos.no_pb2_grpc import NoStub, NoServicer, add_NoServicer_to_server
+
+QTD_NOS = 4
+QUORUM = 3
+TEMPO_HEARTBEAT = 0.1
+TEMPO_ELEICAO = 0.15
 
 estado = StrEnum('estado', ['seguidor', 'candidato', 'lider'])
-quorum = 3
-tempo_heartbeat = 0.1
-tempo_eleicao = 0.15
 
-class No:
+class No(NoServicer):
     def __init__(self, id):
         self.id = id
         self.estado_atual = estado.seguidor
@@ -35,6 +42,9 @@ def exibir_estado(estado_atual, termo_atual, indice_commit):
     print(f"Papel: {estado_atual}")
     print(f"Termo: {termo_atual}")
     print(f"Índice de Commit: {indice_commit}")
+
+def calcular_porta(id):
+    return 50051 + id
 
 # ao ser iniciado, o nó = estado.seguidor
 
@@ -88,3 +98,16 @@ armazenado na maioria dos nós (quórum). Dados com índice do log
 ≤ índice do commit são considerados comitados/efetivados e aplicados
 no banco de dados final.
 '''
+
+parser = argparse.ArgumentParser(description="No")
+parser.add_argument("--id", type=int, required=True, help="ID do nó")
+
+if __name__ == "__main__":
+    args = parser.parse_args()
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    add_NoServicer_to_server(No(id=args.id), server)
+    server.add_insecure_port(f"[::]:{calcular_porta(args.id)}")
+    server.start()
+    server.wait_for_termination()
+    
