@@ -16,6 +16,7 @@ TEMPO_HEARTBEAT = 0.1 if not DEBUG else 1
 TEMPO_ELEICAO = 0.3 if not DEBUG else 3
 
 estado = StrEnum('estado', ['seguidor', 'candidato', 'lider'])
+end_event = threading.Event()
 
 class No(no_pb2_grpc.NoServicer):
     def __init__(self, id):
@@ -35,6 +36,13 @@ class No(no_pb2_grpc.NoServicer):
         self.eleicao_thread.start()
 
         self.VirarSeguidor()
+    
+    def __exit__(self):
+        end_event.set()
+        self.heartbeat_event.set()
+        self.eleicao_event.set()
+        self.heartbeat_thread.join()
+        self.eleicao_thread.join()
 
     def RequestVote(self, request, context):
         if request.termo > self.termo_atual:
@@ -51,7 +59,7 @@ class No(no_pb2_grpc.NoServicer):
     def VirarLider(self):
         self.estado_atual = estado.lider
         self.lider = None
-        print(f"Nó {self.id} se tornou líder no termo {self.termo_atual}")
+        print(f"\nNó {self.id} se tornou líder no termo {self.termo_atual}")
 
     def VirarSeguidor(self, id_lider=None):
         self.estado_atual = estado.seguidor
@@ -60,7 +68,7 @@ class No(no_pb2_grpc.NoServicer):
         if not self.heartbeat_thread.is_alive():
             self.heartbeat_thread.start()
         
-        print(f"Nó {self.id} voltou a ser seguidor no termo {self.termo_atual}")
+        print(f"\nNó {self.id} voltou a ser seguidor no termo {self.termo_atual}")
 
     def IniciarVotacao(self):
         self.estado_atual = estado.candidato
@@ -78,20 +86,20 @@ class No(no_pb2_grpc.NoServicer):
                 if response.voto:
                     self.votos_recebidos += 1
             except grpc.RpcError as e:
-                print(f"Erro ao solicitar voto para o nó {self.nos.index(no)}")
+                print(f"\nErro ao solicitar voto para o nó {self.nos.index(no)}")
 
         if self.votos_recebidos >= QUORUM:
-            print("Eleito como líder!")
+            print("\nEleito como líder!")
             self.VirarLider()
         else:
-            print("Não obteve votos suficientes. Voltando a ser seguidor.")
+            print("\nNão obteve votos suficientes. Voltando a ser seguidor.")
             self.VirarSeguidor()
 
     def HeartbeatLoop(self):
-        print("Heartbeat iniciou")
+        print("\nHeartbeat iniciou")
         exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider)
         
-        while not self.heartbeat_event.wait(TEMPO_HEARTBEAT):
+        while not self.heartbeat_event.wait(TEMPO_HEARTBEAT) and not end_event.is_set():
             try:
                 if self.estado_atual == estado.seguidor and self.lider is not None:
                     response = self.lider.Heartbeat(no_pb2.HeartbeatRequest(
@@ -103,10 +111,10 @@ class No(no_pb2_grpc.NoServicer):
                     # Atualizar logs            
                     exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider)
             except grpc.RpcError as e:
-                print(f"Erro ao enviar heartbeat para o líder {self.nos.index(self.lider)}")
+                print(f"\nErro ao enviar heartbeat para o líder {self.nos.index(self.lider)}")
 
     def EleicaoLoop(self):
-        while not self.eleicao_event.wait(TEMPO_ELEICAO + random.uniform(0, 0.1)):
+        while not self.eleicao_event.wait(TEMPO_ELEICAO + random.uniform(0, 0.1)) and not end_event.is_set():
             self.IniciarVotacao()
             exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider)
     
@@ -192,18 +200,23 @@ parser = argparse.ArgumentParser(description="No")
 parser.add_argument("--id", type=int, required=True, help="ID do nó")
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-
-    if args.id < 0 or args.id >= QTD_NOS:
-        print(f"ID do nó deve estar entre 0 e {QTD_NOS - 1}")
-        exit(1)
-
     try:
-        server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-        no_pb2_grpc.add_NoServicer_to_server(No(id=args.id), server)
-        server.add_insecure_port(f"[::]:{calcular_porta(args.id)}")
-        server.start()
-        server.wait_for_termination()
-    except grpc.RpcError as e:
-        print(f"Erro ao iniciar o servidor gRPC: {e}")
-        exit(1)
+        args = parser.parse_args()
+
+        if args.id < 0 or args.id >= QTD_NOS:
+            print(f"ID do nó deve estar entre 0 e {QTD_NOS - 1}")
+            exit(1)
+
+        try:
+            server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+            no_pb2_grpc.add_NoServicer_to_server(No(id=args.id), server)
+            server.add_insecure_port(f"[::]:{calcular_porta(args.id)}")
+            server.start()
+            server.wait_for_termination()
+        except grpc.RpcError as e:
+            print(f"Erro ao iniciar o servidor gRPC: {e}")
+            exit(1)
+    except KeyboardInterrupt:
+        print("\nEncerrando o nó...")
+        end_event.set()
+        exit(0)
