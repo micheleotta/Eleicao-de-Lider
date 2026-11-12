@@ -4,8 +4,9 @@ service No {
 }
 
 message VoteRequest {
-    required int32 termo = 1;
-    required int32 indice_log = 2;
+    required int32 id = 1;
+    required int32 termo = 2;
+    required int32 indice_log = 3;
 }
 
 message VoteResponse {

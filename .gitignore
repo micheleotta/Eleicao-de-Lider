@@ -1,4 +1,4 @@
 __pycache__/
 *.der
 .env
-/protos
+no_pb2*
