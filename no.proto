@@ -12,7 +12,7 @@ message VoteRequest {
 message VoteResponse {
     required int32 id = 1;
     required int32 termo = 2;
-    required bool voto = 2;
+    required bool voto = 3;
 }
 
 message HeartbeatRequest {
