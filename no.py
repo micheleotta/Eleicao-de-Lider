@@ -30,7 +30,7 @@ class No(no_pb2_grpc.NoServicer):
         self.nos = {id: no_pb2_grpc.NoStub(channel) for id, channel in channels.items()}
         self.heartbeat_task = None
         self.eleicao_task = None
-        self.eleicao_event = asyncio.Event()
+        self.heartbeat_event = asyncio.Event()
 
         self.VirarSeguidor(termo=0)
     
@@ -56,7 +56,7 @@ class No(no_pb2_grpc.NoServicer):
         return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=False)
 
     async def Heartbeat(self, request, context):
-        self.VerificarTermo(request.id, request.termo)
+        # self.VerificarTermo(request.id, request.termo)
 
         # Implementação do método Heartbeat
         
@@ -101,8 +101,8 @@ class No(no_pb2_grpc.NoServicer):
                     indice_log=self.indice_log
                 ))
 
-                if (self.VerificarTermo(response.id, response.termo)):
-                    return
+                # if (self.VerificarTermo(response.id, response.termo)):
+                #     return
 
                 if response.voto:
                     self.votos_recebidos += 1
@@ -131,9 +131,9 @@ class No(no_pb2_grpc.NoServicer):
                     ))
 
                     # Sinaliza que o líder está ativo
-                    self.eleicao_event.set()
+                    self.heartbeat_event.set()
                     
-                    self.VerificarTermo(response.id, response.termo)
+                    # self.VerificarTermo(response.id, response.termo)
 
                     # Atualizar logs            
                     exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
@@ -146,8 +146,8 @@ class No(no_pb2_grpc.NoServicer):
 
             try:
                 # Aguarda o timeout, reinicia o temporizador se receber heartbeat do líder
-                await asyncio.wait_for(self.eleicao_event.wait(), timeout=timeout)
-                self.eleicao_event.clear()
+                await asyncio.wait_for(self.heartbeat_event.wait(), timeout=timeout)
+                self.heartbeat_event.clear()
             except asyncio.TimeoutError:
                 # Se o temporizador expirar, inicia a eleição
                 await self.IniciarEleicao()
@@ -163,7 +163,7 @@ class No(no_pb2_grpc.NoServicer):
     
     def IniciarEleicaoLoop(self):
         if self.eleicao_task is None or self.eleicao_task.done():
-            self.eleicao_event.clear()
+            self.heartbeat_event.clear()
             self.eleicao_task = asyncio.create_task(self.EleicaoLoop())
 
     def EncerrarEleicaoLoop(self):
