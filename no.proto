@@ -10,18 +10,22 @@ message VoteRequest {
 }
 
 message VoteResponse {
-    required bool voto = 1;
+    required int32 id = 1;
+    required int32 termo = 2;
+    required bool voto = 2;
 }
 
 message HeartbeatRequest {
-    optional int32 termo = 1;
-    optional int32 indice_log = 2;
+    required int32 id = 1;
+    optional int32 termo = 2;
+    optional int32 indice_log = 3;
 }
 
 message HeartbeatResponse {
-    required int32 termo = 1;
-    required int32 indice_log = 2;
-    repeated Log logs = 3;
+    required int32 id = 1;
+    required int32 termo = 2;
+    required int32 indice_log = 3;
+    repeated Log logs = 4;
 }
 
 message Log {

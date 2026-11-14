@@ -32,7 +32,7 @@ class No(no_pb2_grpc.NoServicer):
         self.eleicao_task = None
         self.eleicao_event = asyncio.Event()
 
-        self.VirarSeguidor()
+        self.VirarSeguidor(termo=0)
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.heartbeat_task:
@@ -42,24 +42,26 @@ class No(no_pb2_grpc.NoServicer):
 
     async def RequestVote(self, request, context):
         if request.termo < self.termo_atual:
-            return no_pb2.VoteResponse(voto=False)
+            return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=False)
 
         # Termo mudou: pode votar novamente
         if request.termo > self.termo_atual:
             self.votou = False
 
         if not self.votou:
-            self.termo_atual = request.termo
-            self.VirarSeguidor(request.id)
+            self.VirarSeguidor(request.termo, request.id)
             self.votou = True
-            return no_pb2.VoteResponse(voto=True)
+            return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=True)
         
-        return no_pb2.VoteResponse(voto=False)
+        return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=False)
 
     async def Heartbeat(self, request, context):
+        self.VerificarTermo(request.id, request.termo)
+
         # Implementação do método Heartbeat
         
         return no_pb2.HeartbeatResponse(
+            id=self.id,
             termo=self.termo_atual,
             indice_log=self.indice_log
         )
@@ -72,9 +74,10 @@ class No(no_pb2_grpc.NoServicer):
 
         print(f"\nNó {self.id} se tornou líder no termo {self.termo_atual}")
 
-    def VirarSeguidor(self, lider_id=None):
+    def VirarSeguidor(self, termo, lider_id=None):
         self.estado_atual = estado.seguidor
         self.lider_id = lider_id
+        self.termo_atual = termo
 
         self.IniciarHearbeatLoop()
         self.IniciarEleicaoLoop()
@@ -98,6 +101,9 @@ class No(no_pb2_grpc.NoServicer):
                     indice_log=self.indice_log
                 ))
 
+                if (self.VerificarTermo(response.id, response.termo)):
+                    return
+
                 if response.voto:
                     self.votos_recebidos += 1
             except grpc.RpcError as e:
@@ -119,12 +125,15 @@ class No(no_pb2_grpc.NoServicer):
             try:
                 if self.estado_atual == estado.seguidor and self.lider_id is not None:
                     response = await self.nos[self.lider_id].Heartbeat(no_pb2.HeartbeatRequest(
+                        id=self.id,
                         termo=self.termo_atual,
                         indice_log=self.indice_log
                     ))
 
                     # Sinaliza que o líder está ativo
                     self.eleicao_event.set()
+                    
+                    self.VerificarTermo(response.id, response.termo)
 
                     # Atualizar logs            
                     exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
@@ -160,6 +169,14 @@ class No(no_pb2_grpc.NoServicer):
     def EncerrarEleicaoLoop(self):
         if self.eleicao_task and not self.eleicao_task.done():
             self.eleicao_task.cancel()
+
+    def VerificarTermo(self, id, termo):
+        if termo > self.termo_atual:
+            print(f"\nTermo maior do nó {id}. Voltando a ser seguidor.")
+            self.VirarSeguidor(termo, id)
+            return True
+        
+        return False
 
 def exibir_estado(estado_atual, termo_atual, indice_commit, lider=None):
     print(f"===============================")
