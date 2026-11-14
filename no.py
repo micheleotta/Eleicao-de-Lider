@@ -12,8 +12,8 @@ from enum import StrEnum
 DEBUG = True
 QTD_NOS = 4
 QUORUM = 3
-TEMPO_HEARTBEAT = 0.1 if not DEBUG else 1
-TEMPO_ELEICAO = 0.3 if not DEBUG else 3
+TEMPO_HEARTBEAT = 0.1 if not DEBUG else 5
+TEMPO_ELEICAO = 0.3 if not DEBUG else 10
 
 estado = StrEnum('estado', ['seguidor', 'candidato', 'lider'])
 
@@ -24,8 +24,8 @@ class No(no_pb2_grpc.NoServicer):
         self.termo_atual = 0
         self.indice_log = 0
         self.indice_commit = 0
-        self.ultimo_heartbeat = time.time()
         self.votos_recebidos = 0
+        self.votou = False
 
         self.nos = {id: no_pb2_grpc.NoStub(channel) for id, channel in channels.items()}
         self.heartbeat_task = asyncio.create_task(self.HeartbeatLoop())
@@ -41,9 +41,16 @@ class No(no_pb2_grpc.NoServicer):
             self.eleicao_task.cancel()
 
     async def RequestVote(self, request, context):
+        if request.termo < self.termo_atual:
+            return no_pb2.VoteResponse(voto=False)
+
         if request.termo > self.termo_atual:
+            self.votou = False
+
+        if not self.votou:
             self.termo_atual = request.termo
             self.VirarSeguidor(request.id)
+            self.votou = True
             return no_pb2.VoteResponse(voto=True)
         
         return no_pb2.VoteResponse(voto=False)
@@ -76,13 +83,14 @@ class No(no_pb2_grpc.NoServicer):
             self.eleicao_event.clear()
             self.eleicao_task = asyncio.create_task(self.EleicaoLoop())
 
-        print(f"\nNó {self.id} voltou a ser seguidor no termo {self.termo_atual}")
+        print(f"\nNó {self.id} se tornou seguidor no termo {self.termo_atual}")
 
     async def IniciarEleicao(self):
         print("\nEleição iniciou")
         self.estado_atual = estado.candidato
         self.termo_atual += 1
         self.votos_recebidos = 1
+        self.votou = True
 
         if self.heartbeat_task and not self.heartbeat_task.done():
             self.heartbeat_task.cancel()
