@@ -28,8 +28,8 @@ class No(no_pb2_grpc.NoServicer):
         self.votou = False
 
         self.nos = {id: no_pb2_grpc.NoStub(channel) for id, channel in channels.items()}
-        self.heartbeat_task = asyncio.create_task(self.HeartbeatLoop())
-        self.eleicao_task = asyncio.create_task(self.EleicaoLoop())
+        self.heartbeat_task = None
+        self.eleicao_task = None
         self.eleicao_event = asyncio.Event()
 
         self.VirarSeguidor()
@@ -44,6 +44,7 @@ class No(no_pb2_grpc.NoServicer):
         if request.termo < self.termo_atual:
             return no_pb2.VoteResponse(voto=False)
 
+        # Termo mudou: pode votar novamente
         if request.termo > self.termo_atual:
             self.votou = False
 
@@ -67,8 +68,7 @@ class No(no_pb2_grpc.NoServicer):
         self.estado_atual = estado.lider
         self.lider_id = None
 
-        if self.eleicao_task and not self.eleicao_task.done():
-            self.eleicao_task.cancel()
+        self.EncerrarEleicaoLoop()
 
         print(f"\nNó {self.id} se tornou líder no termo {self.termo_atual}")
 
@@ -76,12 +76,8 @@ class No(no_pb2_grpc.NoServicer):
         self.estado_atual = estado.seguidor
         self.lider_id = lider_id
 
-        if self.heartbeat_task is None or self.heartbeat_task.done():
-            self.heartbeat_task = asyncio.create_task(self.HeartbeatLoop())
-        
-        if self.eleicao_task is None or self.eleicao_task.done():
-            self.eleicao_event.clear()
-            self.eleicao_task = asyncio.create_task(self.EleicaoLoop())
+        self.IniciarHearbeatLoop()
+        self.IniciarEleicaoLoop()
 
         print(f"\nNó {self.id} se tornou seguidor no termo {self.termo_atual}")
 
@@ -92,11 +88,7 @@ class No(no_pb2_grpc.NoServicer):
         self.votos_recebidos = 1
         self.votou = True
 
-        if self.heartbeat_task and not self.heartbeat_task.done():
-            self.heartbeat_task.cancel()
-
-        if self.eleicao_task is None or self.eleicao_task.done():
-            self.eleicao_task = asyncio.create_task(self.EleicaoLoop())
+        self.EncerrarHeartbeatLoop()
 
         for id, no in self.nos.items():
             try:
@@ -152,6 +144,22 @@ class No(no_pb2_grpc.NoServicer):
                 await self.IniciarEleicao()
                 exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
     
+    def IniciarHearbeatLoop(self):
+        if self.heartbeat_task is None or self.heartbeat_task.done():
+            self.heartbeat_task = asyncio.create_task(self.HeartbeatLoop())
+
+    def EncerrarHeartbeatLoop(self):
+        if self.heartbeat_task and not self.heartbeat_task.done():
+            self.heartbeat_task.cancel()
+    
+    def IniciarEleicaoLoop(self):
+        if self.eleicao_task is None or self.eleicao_task.done():
+            self.eleicao_event.clear()
+            self.eleicao_task = asyncio.create_task(self.EleicaoLoop())
+
+    def EncerrarEleicaoLoop(self):
+        if self.eleicao_task and not self.eleicao_task.done():
+            self.eleicao_task.cancel()
 
 def exibir_estado(estado_atual, termo_atual, indice_commit, lider=None):
     print(f"===============================")
