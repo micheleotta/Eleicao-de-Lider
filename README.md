@@ -18,3 +18,4 @@ Compilar:
 
 De 3 a 4 nós (n = um número de 0 a 3):
 * `python no.py --id=n`
+* `python cliente.py`
