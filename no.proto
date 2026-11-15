@@ -26,6 +26,8 @@ message HeartbeatResponse {
     required int32 termo = 2;
     required int32 indice_log = 3;
     repeated Log logs = 4;
+    required bool sucesso = 5;
+    required int32 lider_id = 6;
 }
 
 message Log {

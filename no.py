@@ -2,6 +2,7 @@ import time
 import random
 import asyncio
 import argparse
+from urllib import request
 import grpc
 import no_pb2
 import no_pb2_grpc
@@ -12,8 +13,12 @@ from enum import StrEnum
 DEBUG = True
 QTD_NOS = 4
 QUORUM = 3
-TEMPO_HEARTBEAT = 0.1 if not DEBUG else 5
+
+TEMPO_HEARTBEAT = 0.5 if not DEBUG else 2
 TEMPO_ELEICAO = 0.3 if not DEBUG else 10
+
+# Líder mantém um Heartbeat Timeout para cada réplica
+HEARTBEAT_TIMEOUT = 0.5 if not DEBUG else 3.5
 
 estado = StrEnum('estado', ['seguidor', 'candidato', 'lider'])
 
@@ -26,11 +31,18 @@ class No(no_pb2_grpc.NoServicer):
         self.indice_commit = 0
         self.votos_recebidos = 0
         self.votou = False
+        self.voted_for = None
 
         self.nos = {id: no_pb2_grpc.NoStub(channel) for id, channel in channels.items()}
         self.heartbeat_task = None
         self.eleicao_task = None
+        self.monitor_task = None
         self.heartbeat_event = asyncio.Event()
+        
+        # Monitoramento
+        self.ultimo_fetch = {}                              # Último FetchRequest recebido de cada réplica
+        self.indices_replicas = {id: 0 for id in channels}  # Último índice de log informado por cada réplica
+        self.replicas_inativas = set()
 
         self.VirarSeguidor(termo=0)
     
@@ -39,84 +51,154 @@ class No(no_pb2_grpc.NoServicer):
             self.heartbeat_task.cancel()
         if self.eleicao_task:
             self.eleicao_task.cancel()
+        if self.monitor_task:
+            self.monitor_task.cancel()
 
     async def RequestVote(self, request, context):
+        '''Solicitação de Voto'''
+        
         if request.termo < self.termo_atual:
             return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=False)
 
-        # Termo mudou: pode votar novamente
+        # Voto único por termo
         if request.termo > self.termo_atual:
-            self.votou = False
+            # self.votou = False
+            self.VirarSeguidor(request.termo)
 
-        if not self.votou:
-            self.VirarSeguidor(request.termo, request.id)
+        # Um nó só concede seu voto a um candidato se o log do candidato
+        # for tão ou mais atualizado que o seu próprio log
+        if (not self.votou or self.voted_for == request.id) and request.indice_log >= self.indice_log:
+            # self.VirarSeguidor(request.termo, request.id) # mudei
+            self.voted_for = request.id
             self.votou = True
+            self.VirarSeguidor(request.termo, request.id)
+            print(f"\n[Eleição] Votou para o nó {request.id} no termo {request.termo}")
             return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=True)
         
         return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=False)
 
     async def Heartbeat(self, request, context):
-        # self.VerificarTermo(request.id, request.termo)
-
-        # Implementação do método Heartbeat
+        '''Recebe FetchRequest/Heartbeat de uma réplica'''
         
+        # Se recebeu termo obsoleto -> rejeita
+        if request.termo < self.termo_atual:
+            return no_pb2.HeartbeatResponse(
+                id=self.id,
+                termo=self.termo_atual,
+                indice_log=self.indice_log,
+                sucesso=False, # rejeita a requisição
+                lider_id=self.lider_id
+            )
+        
+        # Se recebeu termo maior -> vira seguidor
+        if self.VerificarTermo(request.id, request.termo):
+            return no_pb2.HeartbeatResponse(
+                id=self.id,
+                termo=self.termo_atual,
+                indice_log=self.indice_log,
+                sucesso=False,
+                lider_id=None
+            )
+        
+        # Apenas líder atende FetchRequests
+        if self.estado_atual != estado.lider:
+            return no_pb2.HeartbeatResponse(
+                id=self.id,
+                termo=self.termo_atual,
+                indice_log=self.indice_log,
+                sucesso=False,
+                lider_id=self.lider_id
+            )
+        
+        # Se lider:
+        # Registra a atividade da réplica
+        self.ultimo_fetch[request.id] = time.monotonic()
+        # Registra o índice de log informado
+        self.indices_replicas[request.id] = request.indice_log
+        print(f"[♡] Heartbeat recebido -> {request.id}")
         return no_pb2.HeartbeatResponse(
             id=self.id,
             termo=self.termo_atual,
-            indice_log=self.indice_log
+            indice_log=self.indice_log,
+            sucesso=True,
+            lider_id=self.id
         )
 
     def VirarLider(self):
         self.estado_atual = estado.lider
-        self.lider_id = None
+        self.lider_id = self.id
 
         self.EncerrarEleicaoLoop()
+        self.ultimo_fetch.clear()
+        self.replicas_inativas = set()
 
+        self.IniciarMonitoramentoLoop()
         print(f"\nNó {self.id} se tornou líder no termo {self.termo_atual}")
 
     def VirarSeguidor(self, termo, lider_id=None):
+        if termo > self.termo_atual:
+            self.voted_for = None
+            self.votou = False
+        
         self.estado_atual = estado.seguidor
         self.lider_id = lider_id
         self.termo_atual = termo
 
-        self.IniciarHearbeatLoop()
+        self.EncerrarMonitoramentoLoop()
+        self.heartbeat_event.clear()
+        self.IniciarHeartbeatLoop()
         self.IniciarEleicaoLoop()
 
-        print(f"\nNó {self.id} se tornou seguidor no termo {self.termo_atual}")
+        if self.lider_id:
+            print(f"\nNó {self.id} se tornou seguidor de {self.lider_id} no termo {self.termo_atual}")
+        else:
+            print(f"Nó {self.id} se tornou seguidor")
 
     async def IniciarEleicao(self):
-        print("\nEleição iniciou")
+        print(f"\n[Eleição] {self.id} iniciou uma eleição")
         self.estado_atual = estado.candidato
+        self.lider_id = None
         self.termo_atual += 1
+        self.voted_for = self.id
         self.votos_recebidos = 1
         self.votou = True
-
-        self.EncerrarHeartbeatLoop()
+        
+        termo_eleicao = self.termo_atual
 
         for id, no in self.nos.items():
             try:
-                response = await no.RequestVote(no_pb2.VoteRequest(
-                    id=self.id,
-                    termo=self.termo_atual,
-                    indice_log=self.indice_log
-                ))
+                response = await no.RequestVote(
+                    no_pb2.VoteRequest(
+                        id=self.id,
+                        termo=termo_eleicao,
+                        indice_log=self.indice_log
+                    ))
 
-                # if (self.VerificarTermo(response.id, response.termo)):
-                #     return
+                # Atualização de termo se resposta tiver termo maior  -> precisa desse?
+                if (self.VerificarTermo(response.id, response.termo)):
+                    return
+                
+                # Ignora respostas de uma eleição anterior
+                if self.termo_atual != termo_eleicao:
+                    return
 
                 if response.voto:
                     self.votos_recebidos += 1
+                    print(f"[Eleição] Nó {self.id} recebeu voto de {id} (total: {self.votos_recebidos})")
+            
             except grpc.RpcError as e:
-                print(f"Erro ao solicitar voto para o nó {id}")
+                print(f"Erro ao solicitar voto para o nó {id}: {e}")
 
-        if self.votos_recebidos >= QUORUM:
-            print("\nEleito como líder!")
-            self.VirarLider()
-        else:
-            print("\nNão obteve votos suficientes.")
+        # Verifica se ainda é candidato, ou teve atualização
+        if self.estado_atual == estado.candidato and self.termo_atual == termo_eleicao:
+            if self.votos_recebidos >= QUORUM:
+                print("\n[Eleição] Eleito como líder!")
+                self.VirarLider()
+            else:
+                print(f"\n[Eleição] Não obteve votos suficientes: {self.votos_recebidos}/{QUORUM}")
 
     async def HeartbeatLoop(self):
-        print("\nHeartbeat iniciou")
+        print("\n[♡] Heartbeat iniciou")
         exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
         
         while True:
@@ -124,36 +206,46 @@ class No(no_pb2_grpc.NoServicer):
 
             try:
                 if self.estado_atual == estado.seguidor and self.lider_id is not None:
-                    response = await self.nos[self.lider_id].Heartbeat(no_pb2.HeartbeatRequest(
-                        id=self.id,
-                        termo=self.termo_atual,
-                        indice_log=self.indice_log
-                    ))
-
-                    # Sinaliza que o líder está ativo
-                    self.heartbeat_event.set()
+                    response = await self.nos[self.lider_id].Heartbeat(
+                        no_pb2.HeartbeatRequest(
+                            id=self.id,
+                            termo=self.termo_atual,
+                            indice_log=self.indice_log
+                        ))
                     
-                    # self.VerificarTermo(response.id, response.termo)
+                    # Resposta com termo maior
+                    if self.VerificarTermo(response.id, response.termo):
+                        continue
+                    
+                    # Líder ativo se resposta aceita
+                    if(response.sucesso and response.termo == self.termo_atual):
+                        # Sinaliza que o líder está ativo
+                        self.heartbeat_event.set()
+                        print(f"[♡] Líder ativo: {self.lider_id}")
 
-                    # Atualizar logs            
+                    # Atualizar logs
                     exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
             except grpc.RpcError as e:
-                print(f"\nErro ao enviar heartbeat para o líder")
+                print(f"\nErro ao enviar heartbeat para o líder {self.lider_id}: {e}")
 
     async def EleicaoLoop(self):
         while True:
-            timeout = TEMPO_ELEICAO + random.uniform(0, 0.1)
+            # Temporizadores de eleição aleatórios -> evitar que enviem ao mesmo tempo
+            timeout = TEMPO_ELEICAO + random.uniform(0, 0.2)
 
             try:
                 # Aguarda o timeout, reinicia o temporizador se receber heartbeat do líder
                 await asyncio.wait_for(self.heartbeat_event.wait(), timeout=timeout)
+                # Se recebeu resposta válida do líder, reinicia o temporizador
                 self.heartbeat_event.clear()
+            
             except asyncio.TimeoutError:
-                # Se o temporizador expirar, inicia a eleição
-                await self.IniciarEleicao()
-                exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
+                if self.estado_atual != estado.lider:
+                    # Se o temporizador expirar, inicia a eleição
+                    await self.IniciarEleicao()
+                    exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
     
-    def IniciarHearbeatLoop(self):
+    def IniciarHeartbeatLoop(self):
         if self.heartbeat_task is None or self.heartbeat_task.done():
             self.heartbeat_task = asyncio.create_task(self.HeartbeatLoop())
 
@@ -171,12 +263,61 @@ class No(no_pb2_grpc.NoServicer):
             self.eleicao_task.cancel()
 
     def VerificarTermo(self, id, termo):
+        '''Verificação do termo. Retorna True se houve atualização'''
         if termo > self.termo_atual:
             print(f"\nTermo maior do nó {id}. Voltando a ser seguidor.")
-            self.VirarSeguidor(termo, id)
+            self.VirarSeguidor(termo)
             return True
         
         return False
+    
+    def ReplicasAtivas(self):
+        '''Retorna as réplicas que enviaram FetchRequest dentro do Heartbeat Timeout'''
+        
+        agora = time.monotonic()
+        replicas_ativas = []
+
+        for id, ultimo_fetch in self.ultimo_fetch.items():
+            if agora - ultimo_fetch <= HEARTBEAT_TIMEOUT:
+                replicas_ativas.append(id)
+
+        return replicas_ativas
+
+    def TemQuorum(self):
+        '''Verifica se o líder possui quórum de nós ativos'''
+        
+        if self.estado_atual == estado.lider:
+            # O próprio líder conta como um nó ativo -> ?
+            nos_ativos = 1 + len(self.ReplicasAtivas())
+            return nos_ativos >= QUORUM
+        return False
+    
+    async def MonitorarReplicasLoop(self):
+        '''Monitoramento de inatividade das réplicas pelo líder'''
+        print("\n[MONITOR] Monitoramento de réplicas iniciado")
+
+        while self.estado_atual == estado.lider:
+            await asyncio.sleep(TEMPO_HEARTBEAT)
+            replicas_ativas = set(self.ReplicasAtivas())
+            replicas_inativas = set(self.nos.keys()) - replicas_ativas
+
+            # Exibe somente quando houver alteração
+            if replicas_inativas != self.replicas_inativas:
+                self.replicas_inativas = replicas_inativas
+                print(f"\nRéplicas ativas: {sorted(replicas_ativas)}")
+                print(f"Réplicas inativas: {sorted(replicas_inativas)}")
+
+                if not self.TemQuorum():
+                    print("\n[ALERTA] Líder sem quórum!")
+
+    def IniciarMonitoramentoLoop(self):
+        if self.monitor_task is None or self.monitor_task.done():
+            self.monitor_task = asyncio.create_task(self.MonitorarReplicasLoop())
+    
+    def EncerrarMonitoramentoLoop(self):
+        if self.monitor_task and not self.monitor_task.done():
+            self.monitor_task.cancel()
+
 
 def exibir_estado(estado_atual, termo_atual, indice_commit, lider=None):
     print(f"===============================")
