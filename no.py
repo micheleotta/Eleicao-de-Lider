@@ -317,6 +317,42 @@ class No(no_pb2_grpc.NoServicer):
     def EncerrarMonitoramentoLoop(self):
         if self.monitor_task and not self.monitor_task.done():
             self.monitor_task.cancel()
+    
+    
+    # Operações com o cliente
+    async def ClientWrite(self, request, context):
+        if self.estado_atual != estado.lider:
+            return no_pb2.WriteResponse(
+                sucesso = False,
+                lider_id = self.lider_id,
+                mensagem = f"falha ao gravar dado -> o lider atual é {self.lider_id}"
+            )
+        
+        if not self.TemQuorum():
+            return no_pb2.WriteResponse(
+                sucesso = False,
+                lider_id = self.lider_id,
+                mensagem = "falha ao gravar dado -> não há quorum suficiente"
+            )
+        
+        # TODO: Implementar gravação de dados no log do líder e replicação para os seguidores
+        
+        # se tudo certo
+        return no_pb2.WriteResponse(
+            sucesso = True,
+            lider_id = self.lider_id,
+            mensagem = "dado gravado com sucesso!"
+        )
+    
+    async def ClientRead(self, request, context):
+        # TODO: Implementar leitura de dados
+        return no_pb2.ReadResponse(
+            sucesso = True,
+            log_index = 0,
+            termo = 0,
+            dado = "",
+            commit_index = 0
+        )
 
 
 def exibir_estado(estado_atual, termo_atual, indice_commit, lider=None):

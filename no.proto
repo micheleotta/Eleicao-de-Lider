@@ -1,6 +1,9 @@
 service No {
     rpc RequestVote (VoteRequest) returns (VoteResponse);
     rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+
+    rpc ClientWrite (WriteRequest) returns (WriteResponse);
+    rpc ClientRead (ReadRequest) returns (ReadResponse);
 }
 
 message VoteRequest {
@@ -34,4 +37,26 @@ message Log {
     required int32 termo = 1;
     required int32 indice = 2;
     required string comando = 3;
+}
+
+message WriteRequest{
+    required string dado = 1;
+}
+
+message WriteResponse{
+    required bool sucesso = 1;
+    required int32 lider_id = 2;
+    required string mensagem = 3;
+}
+
+message ReadRequest{
+    required int32 log_index = 1;
+}
+
+message ReadResponse{
+    required bool sucesso = 1;
+    required int64 log_index = 2;
+    required int64 termo = 3;
+    required string dado = 4;
+    required int64 commit_index = 5;
 }
