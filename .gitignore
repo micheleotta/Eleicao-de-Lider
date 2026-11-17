@@ -2,3 +2,4 @@ __pycache__/
 *.der
 .env
 no_pb2*
+bd/../.db
