@@ -66,9 +66,58 @@ def create_bd(id):
     nocommit_connection.commit()
     nocommit_connection.close()
 
+def insert_log_entry(id, indice, termo, dado, voted_for):
+    _, nocommit_connection = get_connection(id)
+    cursor = nocommit_connection.cursor()
+
+    cursor.execute("""
+        INSERT INTO log_entries (indice, termo, dado, voted_for)
+        VALUES (?, ?, ?, ?)
+    """, (indice, termo, dado, voted_for))
+
+    nocommit_connection.commit()
+    nocommit_connection.close()
+
+def commit_log_entry(id, indice):
+    commit_connection, nocommit_connection = get_connection(id)
+
+    cursor_nocommit = nocommit_connection.cursor()
+    cursor_commit = commit_connection.cursor()
+
+    # busca o índice no banco de dados commitado
+    cursor_commit.execute("SELECT MAX(indice) FROM commited_data")
+    commit_index = cursor_commit.fetchone()[0]
+
+    if (commit_index is not None) and (indice <= commit_index):
+        print(f"Índice {indice} já comitado. Ignorando commit.")
+        nocommit_connection.close()
+        commit_connection.close()
+        return
+
+    cursor_nocommit.execute("""
+        SELECT indice, termo, dado FROM log_entries
+        WHERE indice <= ?
+    """, (indice,))
+    log_entries = cursor_nocommit.fetchall()
+
+    if len(log_entries) > 0:
+        cursor_commit.exceutemany("""
+            INSERT INTO commited_data (indice, termo, dado)
+            VALUES (?, ?, ?)
+        """, log_entries)
+
+        # remove entradas já commitadas
+        cursor_nocommit.execute("DELETE FROM log_entries WHERE indice <= ?", (indice,))
+
+    commit_connection.commit()
+    nocommit_connection.commit()
+
+    commit_connection.close()
+    nocommit_connection.close()
+
 # funções auxiliares
-def get_voted_for(id):
+# def get_voted_for(id):
     
-def set_voted_for(id):
+# def set_voted_for(id):
     
-def get_voted_for(id):
+# def get_voted_for(id):
