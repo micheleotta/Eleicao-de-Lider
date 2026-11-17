@@ -30,7 +30,6 @@ class No(no_pb2_grpc.NoServicer):
         self.indice_log = 0
         self.indice_commit = 0
         self.votos_recebidos = 0
-        self.votou = False
         self.voted_for = None
 
         self.nos = {id: no_pb2_grpc.NoStub(channel) for id, channel in channels.items()}
@@ -58,24 +57,22 @@ class No(no_pb2_grpc.NoServicer):
         '''Solicitação de Voto'''
         
         if request.termo < self.termo_atual:
-            return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=False)
+            return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=False)
 
         # Voto único por termo
         if request.termo > self.termo_atual:
-            # self.votou = False
             self.VirarSeguidor(request.termo)
 
         # Um nó só concede seu voto a um candidato se o log do candidato
         # for tão ou mais atualizado que o seu próprio log
-        if (not self.votou or self.voted_for == request.id) and request.indice_log >= self.indice_log:
+        if (not self.voted_for or self.voted_for == request.id) and request.indice_log >= self.indice_log:
             # self.VirarSeguidor(request.termo, request.id) # mudei
             self.voted_for = request.id
-            self.votou = True
             self.VirarSeguidor(request.termo, request.id)
             print(f"\n[Eleição] Votou para o nó {request.id} no termo {request.termo}")
-            return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=True)
+            return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=True)
         
-        return no_pb2.VoteResponse(id=self.id, termo=self.termo_atual, voto=False)
+        return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=False)
 
     async def Heartbeat(self, request, context):
         '''Recebe FetchRequest/Heartbeat de uma réplica'''
@@ -138,7 +135,6 @@ class No(no_pb2_grpc.NoServicer):
     def VirarSeguidor(self, termo, lider_id=None):
         if termo > self.termo_atual:
             self.voted_for = None
-            self.votou = False
         
         self.estado_atual = estado.seguidor
         self.lider_id = lider_id
@@ -161,7 +157,6 @@ class No(no_pb2_grpc.NoServicer):
         self.termo_atual += 1
         self.voted_for = self.id
         self.votos_recebidos = 1
-        self.votou = True
         
         termo_eleicao = self.termo_atual
 
@@ -174,7 +169,7 @@ class No(no_pb2_grpc.NoServicer):
                         indice_log=self.indice_log
                     ))
 
-                # Atualização de termo se resposta tiver termo maior  -> precisa desse?
+                # Se resposta tiver termo maior, se torna seguidor
                 if (self.VerificarTermo(response.id, response.termo)):
                     return
                 
@@ -266,7 +261,7 @@ class No(no_pb2_grpc.NoServicer):
         '''Verificação do termo. Retorna True se houve atualização'''
         if termo > self.termo_atual:
             print(f"\nTermo maior do nó {id}. Voltando a ser seguidor.")
-            self.VirarSeguidor(termo)
+            self.VirarSeguidor(termo, id)
             return True
         
         return False

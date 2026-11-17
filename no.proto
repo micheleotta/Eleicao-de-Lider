@@ -30,13 +30,13 @@ message HeartbeatResponse {
     required int32 indice_log = 3;
     repeated Log logs = 4;
     required bool sucesso = 5;
-    required int32 lider_id = 6;
+    optional int32 lider_id = 6;
 }
 
 message Log {
     required int32 termo = 1;
     required int32 indice = 2;
-    required string comando = 3;
+    required string dado = 3;
 }
 
 message WriteRequest{
