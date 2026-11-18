@@ -20,16 +20,19 @@ import no_pb2
 from typing import List
 
 def get_node_dir(id):
+    '''Retorna o diretório dos bancos do nó'''
     dir = os.path.dirname(os.path.abspath(__file__))
     node_dir = os.path.join(dir, f"no_{str(id)}")
     return node_dir
 
 def get_connection(id, bd_name):
+    '''Retorna a conexão do banco específico'''
     node_dir = get_node_dir(id)
     bd = os.path.join(node_dir, f"{bd_name}.db")
     return sqlite3.connect(bd)
 
 def initialize_bd(id):
+    '''Inicializa todos os bancos'''
     # Cria uma pasta para o nó
     node_dir = get_node_dir(id)
     os.makedirs(node_dir, exist_ok=True)
@@ -85,6 +88,7 @@ def initialize_bd(id):
     nocommit_connection.close()
 
 def get_estado(id):
+    '''Retorna o termo e votação do nó'''
     connection = get_connection(id, "estado")
     cursor = connection.cursor()
 
@@ -100,6 +104,7 @@ def get_estado(id):
     return estado
 
 def update_estado(id, termo, voted_for):
+    '''Atualiza o termo e votação do nó'''
     connection = get_connection(id, "estado")
     cursor = connection.cursor()
 
@@ -112,6 +117,7 @@ def update_estado(id, termo, voted_for):
     connection.close()
 
 def get_log_entries(id, termo, indice) -> List[no_pb2.Log]:
+    '''Retorna os logs a partir do termo e índice'''
     connection = get_connection(id, "log_entries")
     cursor = connection.cursor()
 
@@ -128,6 +134,7 @@ def get_log_entries(id, termo, indice) -> List[no_pb2.Log]:
     return log_entries
 
 def insert_log_entries(id, log_entries: List[no_pb2.Log]):
+    '''Insere uma lista de entradas de log'''
     nocommit_connection = get_connection(id, "log_entries")
     cursor = nocommit_connection.cursor()
 
@@ -140,13 +147,14 @@ def insert_log_entries(id, log_entries: List[no_pb2.Log]):
     nocommit_connection.close()
 
 def commit_logs(id, indice):
+    '''Faz o commit dos logs (do último commit até o índice informado)'''
     commit_connection = get_connection(id, "commited_data")
     nocommit_connection = get_connection(id, "log_entries")
 
     cursor_nocommit = nocommit_connection.cursor()
     cursor_commit = commit_connection.cursor()
 
-    # busca o índice no banco de dados commitado
+    # busca o último índice commitado
     cursor_commit.execute("SELECT MAX(indice) FROM commited_data")
     commit_index = cursor_commit.fetchone()[0]
 
@@ -156,10 +164,11 @@ def commit_logs(id, indice):
         commit_connection.close()
         return False
 
+    # busca os logs entre o último commit e o índice informado
     cursor_nocommit.execute("""
         SELECT indice, termo, dado FROM log_entries
-        WHERE indice <= ?
-    """, (indice))
+        WHERE indice > ? AND indice <= ?
+    """, (commit_index, indice))
     log_entries = cursor_nocommit.fetchall()
 
     if len(log_entries) > 0:
@@ -175,6 +184,7 @@ def commit_logs(id, indice):
     return True
 
 def get_last_commit() -> no_pb2.Log:
+    '''Retorna o último commit'''
     connection = get_connection(id, "commited_data")
     cursor = connection.cursor()
 
