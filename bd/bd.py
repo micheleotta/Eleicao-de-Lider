@@ -16,23 +16,47 @@ LEADER
 import sqlite3
 import os
 
-def get_connection(id):
-    dir = os.path.dirname(os.path.abspath(__file__))
+from typing import List
 
-    # Cria uma pasta para o nó
+class LogEntry:
+    def __init__(self, indice, termo, dado):
+        self.indice = indice
+        self.termo = termo
+        self.dado = dado
+
+def get_node_dir(id):
+    dir = os.path.dirname(os.path.abspath(__file__))
     node_dir = os.path.join(dir, str(id))
+    return node_dir
+
+def get_connection(id, bd_name):
+    node_dir = get_node_dir(id)
+    bd = os.path.join(node_dir, f"{bd_name}.db")
+    return sqlite3.connect(bd)
+
+def initialize_bd(id):
+    # Cria uma pasta para o nó
+    node_dir = get_node_dir(id)
     os.makedirs(node_dir, exist_ok=True)
 
-    bd_commit = os.path.join(node_dir, "commit.db")
-    bd_nocommit = os.path.join(node_dir, "nocommit.db")
+    estado_connection = get_connection(id, "estado")
+    commit_connection = get_connection(id, "commited_data")
+    nocommit_connection = get_connection(id, "log_entries")
 
-    commit_connection = sqlite3.connect(bd_commit)
-    nocommit_connection = sqlite3.connect(bd_nocommit)
+    # banco de estado do nó
+    cursor = estado_connection.cursor()
 
-    return commit_connection, nocommit_connection
+    # estado do nó (termo atual e voto concedido)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS estado (
+            termo INTEGER PRIMARY KEY,
+            voted_for INTEGER NOT NULL
+        )
+    """)
 
-def create_bd(id):
-    commit_connection, nocommit_connection = get_connection(id)
+    estado_connection.commit()
+    estado_connection.close()
+
 
     # banco de dados commitados
     cursor = commit_connection.cursor()
@@ -58,28 +82,40 @@ def create_bd(id):
         CREATE TABLE IF NOT EXISTS log_entries (
             indice INTEGER PRIMARY KEY,
             termo INTEGER NOT NULL,
-            dado TEXT NOT NULL,
-            voted_for BOOLEAN
+            dado TEXT NOT NULL
         )
     """)
 
     nocommit_connection.commit()
     nocommit_connection.close()
 
-def insert_log_entry(id, indice, termo, dado, voted_for):
-    _, nocommit_connection = get_connection(id)
-    cursor = nocommit_connection.cursor()
+def update_estado(id, termo, voted_for):
+    connection = get_connection(id, "estado")
+    cursor = connection.cursor()
 
     cursor.execute("""
-        INSERT INTO log_entries (indice, termo, dado, voted_for)
-        VALUES (?, ?, ?, ?)
-    """, (indice, termo, dado, voted_for))
+        INSERT OR REPLACE INTO estado (termo, voted_for)
+        VALUES (?, ?)
+    """, (termo, voted_for))
+
+    connection.commit()
+    connection.close()
+
+def insert_log_entries(id, log_entries: List[LogEntry]):
+    nocommit_connection = get_connection(id, "log_entries")
+    cursor = nocommit_connection.cursor()
+
+    cursor.executemany("""
+        INSERT INTO log_entries (indice, termo, dado)
+        VALUES (?, ?, ?)
+    """, [(entry.indice, entry.termo, entry.dado) for entry in log_entries])
 
     nocommit_connection.commit()
     nocommit_connection.close()
 
-def commit_log_entry(id, indice):
-    commit_connection, nocommit_connection = get_connection(id)
+def commit_logs(id, indice):
+    commit_connection = get_connection(id, "commited_data")
+    nocommit_connection = get_connection(id, "log_entries")
 
     cursor_nocommit = nocommit_connection.cursor()
     cursor_commit = commit_connection.cursor()
@@ -101,13 +137,10 @@ def commit_log_entry(id, indice):
     log_entries = cursor_nocommit.fetchall()
 
     if len(log_entries) > 0:
-        cursor_commit.exceutemany("""
+        cursor_commit.executemany("""
             INSERT INTO commited_data (indice, termo, dado)
             VALUES (?, ?, ?)
         """, log_entries)
-
-        # remove entradas já commitadas
-        cursor_nocommit.execute("DELETE FROM log_entries WHERE indice <= ?", (indice,))
 
     commit_connection.commit()
     nocommit_connection.commit()
