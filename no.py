@@ -15,7 +15,7 @@ QTD_NOS = 4
 QUORUM = 3
 
 TEMPO_FETCH = 0.5 if not DEBUG else 2
-ELEICAO_TIMEOUT = 0.8 if not DEBUG else 10
+ELEICAO_TIMEOUT = 1.5 if not DEBUG else 10
 
 # Líder mantém um Heartbeat Timeout para cada réplica
 HEARTBEAT_TIMEOUT = 0.5 if not DEBUG else 3.5
@@ -167,7 +167,7 @@ class No(no_pb2_grpc.NoServicer):
         self.termo_atual = termo
 
         self.EncerrarMonitoramentoLoop()
-        self.sucesso_fetch.clear()
+        self.sucesso_fetch.set()
         self.IniciarFetchLoop()
         self.IniciarEleicaoLoop()
 
@@ -200,13 +200,6 @@ class No(no_pb2_grpc.NoServicer):
 
                 # Se resposta tiver termo maior, se torna seguidor
                 if (self.VerificarTermo(response.id, response.termo)):
-                    return
-                
-                # Se já tem líder no mesmo termo -> vira seguidor desse líder
-                if (not response.voto and response.termo == self.termo_atual and response.id >= 0 and response.id != self.id):
-                    print(f"\n[Eleição] Líder atual identificado: {response.id}"
-                    f"\n[Eleição] Nó {self.id} voltando a ser seguidor")
-                    self.VirarSeguidor(response.termo, response.id)
                     return
                 
                 # Ignora respostas de uma eleição anterior
@@ -298,7 +291,7 @@ class No(no_pb2_grpc.NoServicer):
                             print(
                                 f"\n[RECONCILIAÇÃO] Removendo entradas excedentes"
                                 f"\n- Primeiro índice removido: {primeiro_excedente}"
-                                f"\n- Último índice do líder: {ultimo_log_lider}"
+                                f"\n- Último índice do líder: {ultimo_log_lider}\n"
                             )
                         
                         # Atualiza índice local
@@ -321,7 +314,7 @@ class No(no_pb2_grpc.NoServicer):
     async def EleicaoLoop(self):
         while True:
             # Temporizadores de eleição aleatórios -> evitar que enviem ao mesmo tempo
-            timeout = ELEICAO_TIMEOUT + random.uniform(0, 0.3)
+            timeout = ELEICAO_TIMEOUT + random.uniform(0, 0.5)
 
             try:
                 # Aguarda o timeout, reinicia o temporizador se receber heartbeat do líder
@@ -394,7 +387,7 @@ class No(no_pb2_grpc.NoServicer):
             if replicas_inativas != self.replicas_inativas:
                 self.replicas_inativas = replicas_inativas
                 print(f"\nRéplicas ativas: {sorted(replicas_ativas)}")
-                print(f"Réplicas inativas: {sorted(replicas_inativas)}")
+                print(f"Réplicas inativas: {sorted(replicas_inativas)}\n")
 
                 if not self.TemQuorum():
                     print("\n[ALERTA] Líder sem quórum!\n")
