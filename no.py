@@ -73,18 +73,17 @@ class No(no_pb2_grpc.NoServicer):
         if request.termo < self.termo_atual:
             return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=False)
 
+        # Vira seguidor imediatamente se o termo for maior
+        self.VerificarTermo(request.id, request.termo)
+
         # Voto único por termo
         # Um nó só concede seu voto a um candidato se o log do candidato
         # for tão ou mais atualizado que o seu próprio log
-        if request.indice_log >= self.indice_log:
-            if request.termo > self.termo_atual:
-                self.VirarSeguidor(request.termo)
-
-            if not self.voted_for:
-                self.voted_for = request.id
-                self.VirarSeguidor(request.termo, request.id)
-                print(f"\n[Eleição] Votou para o nó {request.id} no termo {request.termo}")
-                return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=True)
+        if not self.voted_for and request.indice_log >= self.indice_log:
+            self.voted_for = request.id
+            self.VirarSeguidor(request.termo, request.id)
+            print(f"\n[Eleição] Votou para o nó {request.id} no termo {request.termo}")
+            return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=True)
         
         return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=False)
 
@@ -242,8 +241,7 @@ class No(no_pb2_grpc.NoServicer):
                         ))
                     
                     # Resposta com termo maior
-                    if self.VerificarTermo(response.id, response.termo):
-                        continue
+                    self.VerificarTermo(response.id, response.termo)
                     
                     # Líder ativo se resposta aceita
                     if response.sucesso and response.termo == self.termo_atual:
