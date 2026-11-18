@@ -74,18 +74,17 @@ class No(no_pb2_grpc.NoServicer):
             return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=False)
 
         # Voto único por termo
-        if request.termo > self.termo_atual:
-            self.VirarSeguidor(request.termo)
-
         # Um nó só concede seu voto a um candidato se o log do candidato
         # for tão ou mais atualizado que o seu próprio log
-        if (not self.voted_for or self.voted_for == request.id) and request.indice_log >= self.indice_log:
-            self.voted_for = request.id
-            self.VirarSeguidor(request.termo, request.id)
-            self.sucesso_fetch.set() # Conceder voto reinicia temporizador de eleição
-            bd.update_estado(self.id, self.termo_atual, self.voted_for)
-            print(f"\n[Eleição] Votou para o nó {request.id} no termo {request.termo}")
-            return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=True)
+        if request.indice_log >= self.indice_log:
+            if request.termo > self.termo_atual:
+                self.VirarSeguidor(request.termo)
+
+            if not self.voted_for:
+                self.voted_for = request.id
+                self.VirarSeguidor(request.termo, request.id)
+                print(f"\n[Eleição] Votou para o nó {request.id} no termo {request.termo}")
+                return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=True)
         
         return no_pb2.VoteResponse(id=self.lider_id, termo=self.termo_atual, voto=False)
 
@@ -495,7 +494,7 @@ class No(no_pb2_grpc.NoServicer):
         return no_pb2.WriteResponse(
             sucesso = False,
             lider_id = self.id,
-            mensagem = f"falha ao gravar dado -> timeour aguardando confirmação do quorum"
+            mensagem = f"falha ao gravar dado -> timeout aguardando confirmação do quorum"
         )
     
     
