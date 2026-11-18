@@ -15,18 +15,13 @@ LEADER
 
 import sqlite3
 import os
+import no_pb2
 
 from typing import List
 
-class LogEntry:
-    def __init__(self, indice, termo, dado):
-        self.indice = indice
-        self.termo = termo
-        self.dado = dado
-
 def get_node_dir(id):
     dir = os.path.dirname(os.path.abspath(__file__))
-    node_dir = os.path.join(dir, str(id))
+    node_dir = os.path.join(dir, f"no_{str(id)}")
     return node_dir
 
 def get_connection(id, bd_name):
@@ -50,7 +45,7 @@ def initialize_bd(id):
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS estado (
             termo INTEGER PRIMARY KEY,
-            voted_for INTEGER NOT NULL
+            voted_for INTEGER
         )
     """)
 
@@ -89,6 +84,21 @@ def initialize_bd(id):
     nocommit_connection.commit()
     nocommit_connection.close()
 
+def get_estado(id):
+    connection = get_connection(id, "estado")
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT termo, voted_for FROM estado
+        ORDER BY termo DESC LIMIT 1
+    """)
+
+    data = cursor.fetchone()
+    estado = {"termo": data[0], "voted_for": data[1]} if data else None
+
+    connection.close()
+    return estado
+
 def update_estado(id, termo, voted_for):
     connection = get_connection(id, "estado")
     cursor = connection.cursor()
@@ -101,7 +111,23 @@ def update_estado(id, termo, voted_for):
     connection.commit()
     connection.close()
 
-def insert_log_entries(id, log_entries: List[LogEntry]):
+def get_log_entries(id, termo, indice) -> List[no_pb2.Log]:
+    connection = get_connection(id, "log_entries")
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT indice, termo, dado FROM log_entries
+        WHERE termo >= ? AND indice >= ?
+        ORDER BY indice
+    """, (termo, indice))
+    rows = cursor.fetchall()
+
+    log_entries = [no_pb2.Log(indice=row[0], termo=row[1], dado=row[2]) for row in rows]
+
+    connection.close()
+    return log_entries
+
+def insert_log_entries(id, log_entries: List[no_pb2.Log]):
     nocommit_connection = get_connection(id, "log_entries")
     cursor = nocommit_connection.cursor()
 
@@ -128,12 +154,12 @@ def commit_logs(id, indice):
         print(f"Índice {indice} já comitado. Ignorando commit.")
         nocommit_connection.close()
         commit_connection.close()
-        return
+        return False
 
     cursor_nocommit.execute("""
         SELECT indice, termo, dado FROM log_entries
         WHERE indice <= ?
-    """, (indice,))
+    """, (indice))
     log_entries = cursor_nocommit.fetchall()
 
     if len(log_entries) > 0:
@@ -143,14 +169,22 @@ def commit_logs(id, indice):
         """, log_entries)
 
     commit_connection.commit()
-    nocommit_connection.commit()
 
     commit_connection.close()
     nocommit_connection.close()
+    return True
 
-# funções auxiliares
-# def get_voted_for(id):
-    
-# def set_voted_for(id):
-    
-# def get_voted_for(id):
+def get_last_commit() -> no_pb2.Log:
+    connection = get_connection(id, "commited_data")
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT indice, termo, dado FROM commited_data
+        ORDER BY indice DESC LIMIT 1
+    """)
+    data = cursor.fetchone()
+
+    last_commit = no_pb2.Log(indice=data[0], termo=data[1], dado=data[2]) if data else None
+
+    connection.close()
+    return last_commit

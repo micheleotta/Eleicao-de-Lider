@@ -2,10 +2,10 @@ import time
 import random
 import asyncio
 import argparse
-from urllib import request
 import grpc
 import no_pb2
 import no_pb2_grpc
+import bd.bd as bd
 
 from concurrent import futures
 from enum import StrEnum
@@ -43,7 +43,8 @@ class No(no_pb2_grpc.NoServicer):
         self.indices_replicas = {id: 0 for id in channels}  # Último índice de log informado por cada réplica
         self.replicas_inativas = set()
 
-        self.VirarSeguidor(termo=0)
+        self.IniciarBD()
+        self.VirarSeguidor(termo=self.termo_atual if self.termo_atual else 0)
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.fetch_task:
@@ -52,6 +53,17 @@ class No(no_pb2_grpc.NoServicer):
             self.eleicao_task.cancel()
         if self.monitor_task:
             self.monitor_task.cancel()
+
+    def IniciarBD(self):
+        '''Inicia os bancos de dados do nó'''
+        bd.initialize_bd(self.id)
+        estado = bd.get_estado(self.id)
+
+        print(estado)
+
+        if (estado):
+            self.termo_atual = estado.get("termo")
+            self.voted_for = estado.get("voted_for")
 
     async def RequestVote(self, request, context):
         '''Solicitação de Voto'''
@@ -66,7 +78,6 @@ class No(no_pb2_grpc.NoServicer):
         # Um nó só concede seu voto a um candidato se o log do candidato
         # for tão ou mais atualizado que o seu próprio log
         if (not self.voted_for or self.voted_for == request.id) and request.indice_log >= self.indice_log:
-            # self.VirarSeguidor(request.termo, request.id) # mudei
             self.voted_for = request.id
             self.VirarSeguidor(request.termo, request.id)
             print(f"\n[Eleição] Votou para o nó {request.id} no termo {request.termo}")
@@ -130,6 +141,10 @@ class No(no_pb2_grpc.NoServicer):
         self.replicas_inativas = set()
 
         self.IniciarMonitoramentoLoop()
+
+        # Persiste o estado do nó
+        bd.update_estado(self.id, self.termo_atual, self.voted_for)
+
         print(f"\nNó {self.id} se tornou líder no termo {self.termo_atual}")
 
     def VirarSeguidor(self, termo, lider_id=None):
@@ -144,6 +159,9 @@ class No(no_pb2_grpc.NoServicer):
         self.sucesso_fetch.clear()
         self.IniciarFetchLoop()
         self.IniciarEleicaoLoop()
+
+        # Persiste o estado do nó
+        bd.update_estado(self.id, self.termo_atual, self.voted_for)
 
         if self.lider_id:
             print(f"\nNó {self.id} se tornou seguidor de {self.lider_id} no termo {self.termo_atual}")
@@ -182,7 +200,10 @@ class No(no_pb2_grpc.NoServicer):
                     print(f"[Eleição] Nó {self.id} recebeu voto de {id} (total: {self.votos_recebidos})")
             
             except grpc.RpcError as e:
-                print(f"Erro ao solicitar voto para o nó {id}: {e}")
+                if (e.code() == grpc.StatusCode.UNAVAILABLE):
+                    print(f"Erro ao solicitar voto para o nó {id}: indisponível")
+                else:
+                    print(f"Erro ao solicitar voto para o nó {id}: {e}")
 
         # Verifica se ainda é candidato, ou teve atualização
         if self.estado_atual == estado.candidato and self.termo_atual == termo_eleicao:
@@ -221,7 +242,10 @@ class No(no_pb2_grpc.NoServicer):
                     # Atualizar logs
                     exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
             except grpc.RpcError as e:
-                print(f"\nErro ao enviar heartbeat para o líder {self.lider_id}: {e}")
+                if (e.code() == grpc.StatusCode.UNAVAILABLE):
+                    print(f"\nErro ao enviar heartbeat para o líder {self.lider_id}: indisponível")
+                else:
+                    print(f"\nErro ao enviar heartbeat para o líder {self.lider_id}: {e}")
 
     async def EleicaoLoop(self):
         while True:
