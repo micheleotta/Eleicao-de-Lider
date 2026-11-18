@@ -128,16 +128,35 @@ def update_estado(id, termo, voted_for):
     connection.close()
 
 
-def get_log_entries(id, termo, indice) -> List[no_pb2.Log]:
-    '''Retorna os logs não commitadosa partir do termo e índice'''
+def get_log_entry(id, indice):
+    '''Retorna entrada específica do log'''
     connection = get_connection(id, "log_entries")
     cursor = connection.cursor()
 
     cursor.execute("""
         SELECT indice, termo, dado FROM log_entries
-        WHERE termo >= ? AND indice >= ?
+        WHERE indice = ?
+    """, (indice,))
+    
+    data = cursor.fetchone()
+    connection.close()
+    
+    if data is None:
+        return None
+
+    log_entry = no_pb2.Log(indice=data[0], termo=data[1], dado=data[2])
+    return log_entry
+
+def get_log_entries(id, indice) -> List[no_pb2.Log]:
+    '''Retorna os logs não comitados a partir do índice informado'''
+    connection = get_connection(id, "log_entries")
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT indice, termo, dado FROM log_entries
+        WHERE indice >= ?
         ORDER BY indice
-    """, (termo, indice))
+    """, (indice,))
     rows = cursor.fetchall()
 
     log_entries = [no_pb2.Log(indice=row[0], termo=row[1], dado=row[2]) for row in rows]
@@ -147,58 +166,87 @@ def get_log_entries(id, termo, indice) -> List[no_pb2.Log]:
 
 
 def insert_log_entries(id, log_entries: List[no_pb2.Log]):
-    '''Insere uma lista de entradas de log'''
+    '''Insere ou atualiza lista de entradas do log'''
     nocommit_connection = get_connection(id, "log_entries")
     cursor = nocommit_connection.cursor()
 
     cursor.executemany("""
         INSERT INTO log_entries (indice, termo, dado)
         VALUES (?, ?, ?)
+        ON CONFLICT(indice) DO UPDATE SET
+            termo = excluded.termo,
+            dado = excluded.dado
     """, [(entry.indice, entry.termo, entry.dado) for entry in log_entries])
 
     nocommit_connection.commit()
     nocommit_connection.close()
 
 
+def truncate_logs_from(id, indice):
+    '''Remove entradas conflitantes e todas as posteriores'''
+
+    connection = get_connection(id, "log_entries")
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        DELETE FROM log_entries
+        WHERE indice >= ?
+    """, (indice,))
+
+    connection.commit()
+    connection.close()
+
+
 def commit_logs(id, indice):
     '''Faz o commit dos logs (do último commit até o índice informado)'''
     commit_connection = get_connection(id, "commited_data")
-    nocommit_connection = get_connection(id, "log_entries")
+    log_connection = get_connection(id, "log_entries")
 
-    cursor_nocommit = nocommit_connection.cursor()
-    cursor_commit = commit_connection.cursor()
+    try:
+        cursor_log = log_connection.cursor()
+        cursor_commit = commit_connection.cursor()
 
-    # busca o último índice commitado
-    cursor_commit.execute("SELECT MAX(indice) FROM commited_data")
-    commit_index = cursor_commit.fetchone()[0]
+        # busca o último índice commitado
+        cursor_commit.execute("SELECT MAX(indice) FROM commited_data")
+        commit_index = cursor_commit.fetchone()[0]
+        
+        if commit_index is None:
+            commit_index = 0
 
-    if (commit_index is not None) and (indice <= commit_index):
-        print(f"Índice {indice} já comitado. Ignorando commit.")
-        nocommit_connection.close()
-        commit_connection.close()
-        return False
+        if indice <= commit_index:
+            return False
 
-    # busca os logs entre o último commit e o índice informado
-    cursor_nocommit.execute("""
-        SELECT indice, termo, dado FROM log_entries
-        WHERE indice > ? AND indice <= ?
-    """, (commit_index, indice))
-    log_entries = cursor_nocommit.fetchall()
+        # busca os logs entre o último commit e o índice informado
+        cursor_log.execute("""
+            SELECT indice, termo, dado FROM log_entries
+            WHERE indice > ? AND indice <= ?
+            ORDER BY indice
+        """, (commit_index, indice))
+        log_entries = cursor_log.fetchall()
 
-    if len(log_entries) > 0:
+        # Não permite avançar o commit se houver lacunas
+        if len(log_entries) != indice - commit_index:
+            raise Exception(f"Log incompleto: esperado até índice {indice}")
+        
+        # Aplica as entradas no banco final
         cursor_commit.executemany("""
             INSERT INTO commited_data (indice, termo, dado)
             VALUES (?, ?, ?)
         """, log_entries)
 
-    commit_connection.commit()
+        commit_connection.commit()
+        return True
+    
+    except Exception:
+        commit_connection.rollback()
+        raise
 
-    commit_connection.close()
-    nocommit_connection.close()
-    return True
+    finally:
+        commit_connection.close()
+        log_connection.close()
 
 
-def get_last_commit() -> no_pb2.Log:
+def get_last_commit(id) -> no_pb2.Log:
     '''Retorna o último commit'''
     connection = get_connection(id, "commited_data")
     cursor = connection.cursor()
@@ -213,3 +261,54 @@ def get_last_commit() -> no_pb2.Log:
 
     connection.close()
     return last_commit
+
+
+def get_commit(id, indice) -> no_pb2.Log:
+    '''Retorna o commit pelo index'''
+    connection = get_connection(id, "commited_data")
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT indice, termo, dado FROM commited_data
+        WHERE indice = ?
+    """, (indice,))
+    data = cursor.fetchone()
+
+    commit = no_pb2.Log(indice=data[0], termo=data[1], dado=data[2]) if data else None
+
+    connection.close()
+    return commit
+
+
+def get_last_log_index(id):
+    '''Retorna o maior índice existente no log'''
+
+    connection = get_connection(id, "log_entries")
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT MAX(indice)
+        FROM log_entries
+    """)
+
+    indice = cursor.fetchone()[0]
+    connection.close()
+
+    return indice if indice is not None else 0
+
+
+def get_last_commit_index(id):
+    '''Retorna o maior índice comitado'''
+
+    connection = get_connection(id, "commited_data")
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT MAX(indice)
+        FROM commited_data
+    """)
+
+    indice = cursor.fetchone()[0]
+    connection.close()
+
+    return indice if indice is not None else 0

@@ -28,9 +28,11 @@ message FetchResponse {
     required int32 id = 1;
     required int32 termo = 2;
     required int32 indice_log = 3;
-    repeated Log logs = 4;
-    required bool sucesso = 5;
-    optional int32 lider_id = 6;
+    required bool sucesso = 4;
+    optional int32 lider_id = 5;
+    required int32 commit_index = 6;
+    repeated Log logs = 7;
+
 }
 
 message Log {
@@ -41,6 +43,7 @@ message Log {
 
 message WriteRequest{
     required string dado = 1;
+    optional bool crash = 2;
 }
 
 message WriteResponse{
@@ -50,13 +53,12 @@ message WriteResponse{
 }
 
 message ReadRequest{
-    required int32 log_index = 1;
+    optional int32 commit_index = 1;
 }
 
 message ReadResponse{
     required bool sucesso = 1;
-    required int64 log_index = 2;
+    required int64 commit_index = 2;
     required int64 termo = 3;
     required string dado = 4;
-    required int64 commit_index = 5;
 }
