@@ -1,16 +1,22 @@
-# Persistir em disco o termo, o voto concedido (flag se já votei), o log de operações e os dados comitados
 '''
-cada nó armazena:
-NODE
-TERM                -> representa o mandato da liderança atual
-ÍNDICE DE LOG       -> SET
-ÍNDICE DE COMMIT    -> o maior índice do log que já foi replicado pelo quórum
-LEADER
+Persistência em Disco: persistir em disco o termo, o voto concedido,
+o log de operações e os dados comitados.
 
 
-1. O Termo atual e o Voto concedido (voted_for);
-2. O log de operações (entradas com termo e índice);
-3. O estado do banco final (dados comitados).
+Cada nó armazena:
+1. estado do nó para resistir a desligamentos
+    - termo atual
+    - voto concedido (voted_for)
+
+2. dados comitados, estado do banco final (commited_data)
+    - índice
+    - termo
+    - dado
+    
+3. dados não comitados, log de operações (log_entries)
+    - índice
+    - termo
+    - dado
 '''
 
 import sqlite3
@@ -19,11 +25,13 @@ import no_pb2
 
 from typing import List
 
+
 def get_node_dir(id):
     '''Retorna o diretório dos bancos do nó'''
     dir = os.path.dirname(os.path.abspath(__file__))
     node_dir = os.path.join(dir, f"no_{str(id)}")
     return node_dir
+
 
 def get_connection(id, bd_name):
     '''Retorna a conexão do banco específico'''
@@ -31,8 +39,9 @@ def get_connection(id, bd_name):
     bd = os.path.join(node_dir, f"{bd_name}.db")
     return sqlite3.connect(bd)
 
+
 def initialize_bd(id):
-    '''Inicializa todos os bancos'''
+    '''Inicializa todos os bancos (estado do nó, dados commitados e dados não commitados)'''
     # Cria uma pasta para o nó
     node_dir = get_node_dir(id)
     os.makedirs(node_dir, exist_ok=True)
@@ -87,6 +96,7 @@ def initialize_bd(id):
     nocommit_connection.commit()
     nocommit_connection.close()
 
+
 def get_estado(id):
     '''Retorna o termo e votação do nó'''
     connection = get_connection(id, "estado")
@@ -103,6 +113,7 @@ def get_estado(id):
     connection.close()
     return estado
 
+
 def update_estado(id, termo, voted_for):
     '''Atualiza o termo e votação do nó'''
     connection = get_connection(id, "estado")
@@ -116,8 +127,9 @@ def update_estado(id, termo, voted_for):
     connection.commit()
     connection.close()
 
+
 def get_log_entries(id, termo, indice) -> List[no_pb2.Log]:
-    '''Retorna os logs a partir do termo e índice'''
+    '''Retorna os logs não commitadosa partir do termo e índice'''
     connection = get_connection(id, "log_entries")
     cursor = connection.cursor()
 
@@ -133,6 +145,7 @@ def get_log_entries(id, termo, indice) -> List[no_pb2.Log]:
     connection.close()
     return log_entries
 
+
 def insert_log_entries(id, log_entries: List[no_pb2.Log]):
     '''Insere uma lista de entradas de log'''
     nocommit_connection = get_connection(id, "log_entries")
@@ -145,6 +158,7 @@ def insert_log_entries(id, log_entries: List[no_pb2.Log]):
 
     nocommit_connection.commit()
     nocommit_connection.close()
+
 
 def commit_logs(id, indice):
     '''Faz o commit dos logs (do último commit até o índice informado)'''
@@ -182,6 +196,7 @@ def commit_logs(id, indice):
     commit_connection.close()
     nocommit_connection.close()
     return True
+
 
 def get_last_commit() -> no_pb2.Log:
     '''Retorna o último commit'''
