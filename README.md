@@ -19,3 +19,5 @@ Compilar:
 De 3 a 4 nós (n = um número de 0 a 3):
 * `python no.py --id=n`
 * `python cliente.py`
+
+<img width="1244" height="628" alt="image" src="https://github.com/user-attachments/assets/7f655ff5-ff4c-438a-b404-a450f2b71850" />
