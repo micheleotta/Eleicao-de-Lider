@@ -1,6 +1,6 @@
 service No {
     rpc RequestVote (VoteRequest) returns (VoteResponse);
-    rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+    rpc Fetch (FetchRequest) returns (FetchResponse);
 
     rpc ClientWrite (WriteRequest) returns (WriteResponse);
     rpc ClientRead (ReadRequest) returns (ReadResponse);
@@ -18,13 +18,13 @@ message VoteResponse {
     required bool voto = 3;
 }
 
-message HeartbeatRequest {
+message FetchRequest {
     required int32 id = 1;
     optional int32 termo = 2;
     optional int32 indice_log = 3;
 }
 
-message HeartbeatResponse {
+message FetchResponse {
     required int32 id = 1;
     required int32 termo = 2;
     required int32 indice_log = 3;
