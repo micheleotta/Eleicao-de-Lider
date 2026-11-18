@@ -231,6 +231,7 @@ class No(no_pb2_grpc.NoServicer):
                 print(f"\n[Eleição] Não obteve votos suficientes: {self.votos_recebidos}/{QUORUM}")
 
     async def FetchLoop(self):
+        '''Réplica buscar novos dados, confirmar o recebimento de logs e avisar que está viva (heartbeat)'''
         print("\n[♡] Heartbeat iniciou")
         exibir_estado(self.estado_atual, self.termo_atual, self.indice_log, self.indice_commit, self.lider_id)
         
@@ -256,7 +257,7 @@ class No(no_pb2_grpc.NoServicer):
                         self.sucesso_fetch.set()
                         print(f"\n[♡] Líder ativo: {self.lider_id}")
                         
-                        # Verifica logs
+                        # Busca ativamente entradas no líder atual
                         for log in response.logs:
                             log_local = bd.get_log_entry(self.id, log.indice)
                             # Verifica possíveis conflitos
@@ -265,14 +266,14 @@ class No(no_pb2_grpc.NoServicer):
                                     if log.indice <= self.indice_commit:
                                         raise Exception("\nDivergência em entrada já comitada!")
                                     print(
-                                        f"\n[RECONCILIAÇÃO] Conflito no índice {log.indice}"
+                                        f"\n[RESSINCRONIZAÇÃO] Conflito no índice {log.indice}"
                                         f"\n- Log local: termo = {log_local.termo}, dado = {log_local.dado}"
                                         f"\n- Log líder: termo = {log.termo}, dado = {log.dado}\n"
                                     )
                                 
                                     # Trunca a partir do índice conflitante
                                     bd.truncate_logs_from(self.id, log.indice)
-                                    print(f"\n[RECONCILIAÇÃO] Trucamento e correção de log -> log locais a partir do índice {log.indice} removidos")
+                                    print(f"\n[RESSINCRONIZAÇÃO] Trucamento e correção de log -> log locais a partir do índice {log.indice} removidos\n")
                                 
                                     # Adiciona logs corretos do líder
                                     bd.insert_log_entries(self.id, [log])
@@ -319,7 +320,7 @@ class No(no_pb2_grpc.NoServicer):
     async def EleicaoLoop(self):
         while True:
             # Temporizadores de eleição aleatórios -> evitar que enviem ao mesmo tempo
-            timeout = ELEICAO_TIMEOUT + random.uniform(0, 0.2)
+            timeout = ELEICAO_TIMEOUT + random.uniform(0, 0.3)
 
             try:
                 # Aguarda o timeout, reinicia o temporizador se receber heartbeat do líder
@@ -375,7 +376,6 @@ class No(no_pb2_grpc.NoServicer):
         '''Verifica se o líder possui quórum de nós ativos'''
         
         if self.estado_atual == estado.lider:
-            # O próprio líder conta como um nó ativo -> ?
             nos_ativos = 1 + len(self.ReplicasAtivas())
             return nos_ativos >= QUORUM
         return False
@@ -475,7 +475,7 @@ class No(no_pb2_grpc.NoServicer):
             nos_confirmados = 1 + replicas_confirmadas # Lider também conta no quorum
             
             if nos_confirmados >= QUORUM:
-                # Atualiza índice de commit
+                # Avança índice de commit apenas ao obter confirmação do quórum
                 self.indice_commit = self.indice_log
                 # Persiste e aplica entradas comitadas no banco final
                 if bd.commit_logs(self.id, self.indice_commit):
@@ -505,7 +505,9 @@ class No(no_pb2_grpc.NoServicer):
     
     
     async def ClientRead(self, request, context):
+        '''Responde a consultas do cliente utilizando apenas dados comitados'''
         try:
+            # Se commit específico solicitado
             commit_index = request.commit_index
             if 0 < commit_index <= bd.get_last_commit_index(self.id):
                 commit = bd.get_commit(self.id, commit_index)
