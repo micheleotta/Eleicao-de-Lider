@@ -47,6 +47,7 @@ class No(no_pb2_grpc.NoServicer):
         self.VirarSeguidor(termo=self.termo_atual if self.termo_atual else 0)
     
     def __exit__(self, exc_type, exc_val, exc_tb):
+        bd.update_estado(self.id, self.termo_atual, self.voted_for)
         if self.fetch_task:
             self.fetch_task.cancel()
         if self.eleicao_task:
@@ -58,10 +59,11 @@ class No(no_pb2_grpc.NoServicer):
         '''Inicia os bancos de dados do nó'''
         bd.initialize_bd(self.id)
         estado = bd.get_estado(self.id)
-
-        print(estado)
+        self.indice_log = bd.get_last_log_index(self.id)
+        self.indice_commit = bd.get_last_commit_index(self.id)
 
         if (estado):
+            print(f"\n\nEstado recuperado: \n- termo: {estado.get('termo')}\n- voted_for: {estado.get('voted_for')}")
             self.termo_atual = estado.get("termo")
             self.voted_for = estado.get("voted_for")
 
@@ -91,31 +93,34 @@ class No(no_pb2_grpc.NoServicer):
         # Se recebeu termo obsoleto -> rejeita
         if request.termo < self.termo_atual:
             return no_pb2.FetchResponse(
-                id=self.id,
-                termo=self.termo_atual,
-                indice_log=self.indice_log,
-                sucesso=False, # rejeita a requisição
-                lider_id=self.lider_id
+                id = self.id,
+                termo = self.termo_atual,
+                indice_log = self.indice_log,
+                sucesso = False, # rejeita a requisição
+                lider_id = self.lider_id,
+                commit_index = self.indice_commit
             )
         
         # Se recebeu termo maior -> vira seguidor
         if self.VerificarTermo(request.id, request.termo):
             return no_pb2.FetchResponse(
-                id=self.id,
-                termo=self.termo_atual,
-                indice_log=self.indice_log,
-                sucesso=False,
-                lider_id=None
+                id = self.id,
+                termo = self.termo_atual,
+                indice_log = self.indice_log,
+                sucesso = False,
+                lider_id = None,
+                commit_index = self.indice_commit
             )
         
         # Apenas líder atende FetchRequests
         if self.estado_atual != estado.lider:
             return no_pb2.FetchResponse(
-                id=self.id,
-                termo=self.termo_atual,
-                indice_log=self.indice_log,
-                sucesso=False,
-                lider_id=self.lider_id
+                id = self.id,
+                termo = self.termo_atual,
+                indice_log = self.indice_log,
+                sucesso = False,
+                lider_id = self.lider_id,
+                commit_index = self.indice_commit
             )
         
         # Se lider:
@@ -123,13 +128,18 @@ class No(no_pb2_grpc.NoServicer):
         self.ultimo_fetch[request.id] = time.monotonic()
         # Registra o índice de log informado
         self.indices_replicas[request.id] = request.indice_log
+        # Envia log completo para permitir comparação
+        logs = bd.get_log_entries(self.id, 1)
+        
         print(f"[♡] Heartbeat recebido -> {request.id}")
         return no_pb2.FetchResponse(
-            id=self.id,
-            termo=self.termo_atual,
-            indice_log=self.indice_log,
-            sucesso=True,
-            lider_id=self.id
+            id = self.id,
+            termo = self.termo_atual,
+            indice_log = self.indice_log,
+            sucesso = True,
+            lider_id = self.id,
+            commit_index = self.indice_commit,
+            logs = logs
         )
 
     def VirarLider(self):
@@ -191,6 +201,13 @@ class No(no_pb2_grpc.NoServicer):
                 if (self.VerificarTermo(response.id, response.termo)):
                     return
                 
+                # Se já tem líder no mesmo termo -> vira seguidor desse líder
+                if(not response.voto and response.termo == self.termo_atual and response.id >= 0 and response.id != self.id):
+                    print(f"\n[Eleição] Líder atual identificado: {response.id}"
+                    f"\n[Eleição] Nó {self.id} voltando a ser seguidor")
+                    self.VirarSeguidor(response.termo, response.id)
+                    return
+                
                 # Ignora respostas de uma eleição anterior
                 if self.termo_atual != termo_eleicao:
                     return
@@ -215,7 +232,7 @@ class No(no_pb2_grpc.NoServicer):
 
     async def FetchLoop(self):
         print("\n[♡] Heartbeat iniciou")
-        exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
+        exibir_estado(self.estado_atual, self.termo_atual, self.indice_log, self.indice_commit, self.lider_id)
         
         while True:
             await asyncio.sleep(TEMPO_FETCH)
@@ -234,13 +251,65 @@ class No(no_pb2_grpc.NoServicer):
                         continue
                     
                     # Líder ativo se resposta aceita
-                    if(response.sucesso and response.termo == self.termo_atual):
+                    if response.sucesso and response.termo == self.termo_atual:
                         # Sinaliza que o líder está ativo
                         self.sucesso_fetch.set()
-                        print(f"[♡] Líder ativo: {self.lider_id}")
+                        print(f"\n[♡] Líder ativo: {self.lider_id}")
+                        
+                        # Verifica logs
+                        for log in response.logs:
+                            log_local = bd.get_log_entry(self.id, log.indice)
+                            # Verifica possíveis conflitos
+                            if log_local is not None:
+                                if log_local.termo != log.termo or log_local.dado != log.dado:
+                                    if log.indice <= self.indice_commit:
+                                        raise Exception("\nDivergência em entrada já comitada!")
+                                    print(
+                                        f"\n[RECONCILIAÇÃO] Conflito no índice {log.indice}"
+                                        f"\n- Log local: termo = {log_local.termo}, dado = {log_local.dado}"
+                                        f"\n- Log líder: termo = {log.termo}, dado = {log.dado}\n"
+                                    )
+                                
+                                    # Trunca a partir do índice conflitante
+                                    bd.truncate_logs_from(self.id, log.indice)
+                                    print(f"\n[RECONCILIAÇÃO] Trucamento e correção de log -> log locais a partir do índice {log.indice} removidos")
+                                
+                                    # Adiciona logs corretos do líder
+                                    bd.insert_log_entries(self.id, [log])
+                            
+                            else:
+                                # Adiciona logs que ainda não foram registrados do líder
+                                bd.insert_log_entries(self.id, [log])
+                        
+                        
+                        # Verifica se há entradas locais excedentes que não existem mais no log do líder
+                        ultimo_log_lider = response.indice_log
+                        ultimo_log_local = bd.get_last_log_index(self.id)
+                        
+                        if ultimo_log_local > ultimo_log_lider:
+                            primeiro_excedente = ultimo_log_lider + 1
+                            if primeiro_excedente <= self.indice_commit:
+                                raise Exception("O líder possui log menor que o índice já comitado localmente!")
+
+                            bd.truncate_logs_from(self.id, primeiro_excedente)
+
+                            print(
+                                f"\n[RECONCILIAÇÃO] Removendo entradas excedentes"
+                                f"\n- Primeiro índice removido: {primeiro_excedente}"
+                                f"\n- Último índice do líder: {ultimo_log_lider}"
+                            )
+                        
+                        # Atualiza índice local
+                        self.indice_log = bd.get_last_log_index(self.id)
+                        
+                        # Comita logs quando confirmado
+                        if response.commit_index > self.indice_commit:
+                            bd.commit_logs(self.id, response.commit_index)
+                            self.indice_commit = bd.get_last_commit_index(self.id)
 
                     # Atualizar logs
-                    exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
+                    exibir_estado(self.estado_atual, self.termo_atual, self.indice_log, self.indice_commit, self.lider_id)
+            
             except grpc.RpcError as e:
                 if (e.code() == grpc.StatusCode.UNAVAILABLE):
                     print(f"\nErro ao enviar heartbeat para o líder {self.lider_id}: indisponível")
@@ -262,7 +331,7 @@ class No(no_pb2_grpc.NoServicer):
                 if self.estado_atual != estado.lider:
                     # Se o temporizador expirar, inicia a eleição
                     await self.IniciarEleicao()
-                    exibir_estado(self.estado_atual, self.termo_atual, self.indice_commit, self.lider_id)
+                    exibir_estado(self.estado_atual, self.termo_atual, self.indice_log, self.indice_commit, self.lider_id)
     
     def IniciarFetchLoop(self):
         if self.fetch_task is None or self.fetch_task.done():
@@ -327,7 +396,7 @@ class No(no_pb2_grpc.NoServicer):
                 print(f"Réplicas inativas: {sorted(replicas_inativas)}")
 
                 if not self.TemQuorum():
-                    print("\n[ALERTA] Líder sem quórum!")
+                    print("\n[ALERTA] Líder sem quórum!\n")
 
     def IniciarMonitoramentoLoop(self):
         if self.monitor_task is None or self.monitor_task.done():
@@ -338,47 +407,143 @@ class No(no_pb2_grpc.NoServicer):
             self.monitor_task.cancel()
     
     
-    # Operações com o cliente
+    # Operações com o cliente =====================================================================
     async def ClientWrite(self, request, context):
+        
+        # Apenas o lider pode realizar escrita de dados
         if self.estado_atual != estado.lider:
+            print("\n[ClientWrite] Não sou o líder!")
             return no_pb2.WriteResponse(
                 sucesso = False,
-                lider_id = self.lider_id,
+                lider_id = self.lider_id if self.lider_id is not None else -1,
                 mensagem = f"falha ao gravar dado -> o lider atual é {self.lider_id}"
             )
         
+        # Verifica o Quorum
         if not self.TemQuorum():
+            print("\n[ClientWrite] Não há quorum suficiente, rejeitando")
             return no_pb2.WriteResponse(
                 sucesso = False,
                 lider_id = self.lider_id,
                 mensagem = "falha ao gravar dado -> não há quorum suficiente"
             )
         
-        # TODO: Implementar gravação de dados no log do líder e replicação para os seguidores
+        # Cria nova entrada no log local (não comitada)
+        try:
+            bd.insert_log_entries(
+                self.id,
+                [
+                    no_pb2.Log(
+                        indice = self.indice_log + 1,
+                        termo = self.termo_atual,
+                        dado = request.dado
+                    )
+                ]
+            )
+            self.indice_log += 1
+            print(f"\n[ClientWrite] Novo log: \n- índice log = {self.indice_log}\n- termo = {self.termo_atual}\n- dado = {request.dado}")
+            
+            if request.crash:
+                print(f"\n[ClientWrite] CRASH!!!")
+                exit(1)
         
-        # se tudo certo
+        except Exception as e:
+            print(f"\n[ClientWrite] Erro ao adicionar novo log: {e}")
+            return no_pb2.WriteResponse(
+                sucesso = False,
+                lider_id = self.id,
+                mensagem = "falha ao persistir nova entrada do log"
+            )
+        
+        # Aguarda confirmação das réplicas
+        inicio = asyncio.get_running_loop().time()
+        timeout = ELEICAO_TIMEOUT
+        
+        while asyncio.get_running_loop().time() - inicio < timeout:
+            
+            # Nó pode perder a liderança
+            if self.estado_atual != estado.lider:
+                print("\n[ClientWrite] Não sou o líder!")
+                return no_pb2.WriteResponse(
+                    sucesso = False,
+                    lider_id = self.lider_id if self.lider_id is not None else -1,
+                    mensagem = f"falha ao gravar dado -> liderança perdida"
+                )
+            
+            # Conta somente réplicas ativas que armazenaram a entrada
+            replicas_confirmadas = sum(1 for id in self.ReplicasAtivas() if self.indices_replicas.get(id, 0) >= self.indice_log)
+            nos_confirmados = 1 + replicas_confirmadas # Lider também conta no quorum
+            
+            if nos_confirmados >= QUORUM:
+                # Atualiza índice de commit
+                self.indice_commit = self.indice_log
+                # Persiste e aplica entradas comitadas no banco final
+                if bd.commit_logs(self.id, self.indice_commit):
+                    print(f"\n[ClientWrite] Commit realizado!\n- indice de commit = {self.indice_commit}\n- nós confirmados = {nos_confirmados}/{QTD_NOS}")
+                    return no_pb2.WriteResponse(
+                        sucesso = True,
+                        lider_id = self.lider_id,
+                        mensagem = f"dado gravado com sucesso! índice = {self.indice_commit}"
+                    )
+                else:
+                    return no_pb2.WriteResponse(
+                        sucesso = False,
+                        lider_id = self.lider_id if self.lider_id is not None else -1,
+                        mensagem = f"falha ao gravar dado"
+                    )
+            
+            # Aguarda novos FetchRequests
+            await asyncio.sleep(0.05)
+        
+        # Timeout: entrada fica no log, mas não é comitada
+        print(f"\n[ClientWrite] Timeout aguardando quorum\n- índice pendente = {self.indice_log}\n- confirmações = {nos_confirmados}/{QUORUM}")
         return no_pb2.WriteResponse(
-            sucesso = True,
-            lider_id = self.lider_id,
-            mensagem = "dado gravado com sucesso!"
+            sucesso = False,
+            lider_id = self.id,
+            mensagem = f"falha ao gravar dado -> timeour aguardando confirmação do quorum"
         )
     
+    
     async def ClientRead(self, request, context):
-        # TODO: Implementar leitura de dados
-        return no_pb2.ReadResponse(
-            sucesso = True,
-            log_index = 0,
-            termo = 0,
-            dado = "",
-            commit_index = 0
-        )
+        try:
+            commit_index = request.commit_index
+            if 0 < commit_index <= bd.get_last_commit_index(self.id):
+                commit = bd.get_commit(self.id, commit_index)
+                if commit is not None:
+                    print(f"\n[ClientRead] Enviando commit {commit_index}: \n- índice = {commit.indice}\n- termo = {commit.termo}\n- dado = {commit.dado!r}")
+                    return no_pb2.ReadResponse(
+                        sucesso = True,
+                        commit_index = commit.indice,
+                        termo = commit.termo,
+                        dado = commit.dado,
+                    )
+            
+            # Se índice inválido, retorna o último commit
+            last_commit = bd.get_last_commit(self.id)
+            print(f"\n[ClientRead] Enviando último commit: \n- índice = {last_commit.indice}\n- termo = {last_commit.termo}\n- dado = {last_commit.dado!r}")
+            return no_pb2.ReadResponse(
+                sucesso = True,
+                commit_index = last_commit.indice,
+                termo = last_commit.termo,
+                dado = last_commit.dado,
+            )
+        
+        except Exception as e:
+            print(f"\n[ClientRead] Erro ao ler último commit: {e}")
+            return no_pb2.ReadResponse(
+                sucesso = False,
+                commit_index = 0,
+                termo = 0,
+                dado = ""
+            )
 
 
-def exibir_estado(estado_atual, termo_atual, indice_commit, lider=None):
+def exibir_estado(estado_atual, termo_atual, indice_log, indice_commit, lider=None):
     print(f"===============================")
     print(time.strftime("%H:%M:%S", time.localtime()))
     print(f"Papel: {estado_atual}")
     print(f"Termo: {termo_atual}")
+    print(f"Índice de Log: {indice_log}")
     print(f"Índice de Commit: {indice_commit}")
     print(f"Líder: {lider}")
 
