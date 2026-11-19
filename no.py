@@ -91,7 +91,7 @@ class No(no_pb2_grpc.NoServicer):
                     if response.termo >= self.termo_atual:
                         print(f"\n[DESCOBERTA] Líder encontrado: nó {response.id} -> termo: {response.termo}")
                         self.VirarSeguidor(response.termo, response.id)
-                        return True
+                        return
 
             except grpc.RpcError as e:
                 if e.code() == grpc.StatusCode.UNAVAILABLE:
@@ -100,7 +100,6 @@ class No(no_pb2_grpc.NoServicer):
                     print(f"\n[DESCOBERTA] Erro consultando nó {id}: {e}")
 
         print("\n[DESCOBERTA] Nenhum líder encontrado.")
-        return False
 
     async def RequestVote(self, request, context):
         '''Solicitação de Voto'''
