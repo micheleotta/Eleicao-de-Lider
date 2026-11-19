@@ -36,7 +36,6 @@ class No(no_pb2_grpc.NoServicer):
         self.fetch_task = None
         self.eleicao_task = None
         self.monitor_task = None
-        self.descobrir_lider = asyncio.Event()
         self.sucesso_fetch = asyncio.Event()
         
         # Monitoramento
@@ -46,6 +45,7 @@ class No(no_pb2_grpc.NoServicer):
 
         self.IniciarBD()
         self.VirarSeguidor(termo=self.termo_atual if self.termo_atual else 0)
+        self.descobrir_lider_task = asyncio.create_task(self.DescobrirLider())
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         bd.update_estado(self.id, self.termo_atual, self.voted_for)
@@ -80,8 +80,7 @@ class No(no_pb2_grpc.NoServicer):
                         id=self.id,
                         termo=self.termo_atual,
                         indice_log=self.indice_log
-                    ),
-                    timeout=2
+                    )
                 )
 
                 # Atualiza o termo caso tenha encontrado um termo mais recente
@@ -272,11 +271,6 @@ class No(no_pb2_grpc.NoServicer):
     async def FetchLoop(self):
         '''Réplica buscar novos dados, confirmar o recebimento de logs e avisar que está viva (heartbeat)'''
         
-        # Descoberta inicial do líder
-        if not self.descobrir_lider.is_set():
-            await self.DescobrirLider()
-            self.descobrir_lider.set()
-        
         print("\n[♡] Heartbeat iniciou")
         exibir_estado(self.estado_atual, self.termo_atual, self.indice_log, self.indice_commit, self.lider_id)
         
@@ -360,9 +354,6 @@ class No(no_pb2_grpc.NoServicer):
                     print(f"\nErro ao enviar heartbeat para o líder {self.lider_id}: {e}")
 
     async def EleicaoLoop(self):
-        # Aguarda a verificação se já há um lider
-        await self.descobrir_lider.wait()
-    
         while True:
             # Temporizadores de eleição aleatórios -> evitar que enviem ao mesmo tempo
             timeout = ELEICAO_TIMEOUT + random.uniform(0, 0.5)
