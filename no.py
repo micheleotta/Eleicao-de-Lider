@@ -6,8 +6,6 @@ import grpc
 import no_pb2
 import no_pb2_grpc
 import bd.bd as bd
-
-from concurrent import futures
 from enum import StrEnum
 
 DEBUG = True
@@ -22,7 +20,7 @@ HEARTBEAT_TIMEOUT = 0.5 if not DEBUG else 3.5
 
 estado = StrEnum('estado', ['seguidor', 'candidato', 'lider'])
 
-class No(no_pb2_grpc.NoServicer):
+class No(no_pb2_grpc.NoServicer, no_pb2_grpc.ServidorServicer):
     def __init__(self, id):
         self.id = id
         self.lider_id = None
@@ -606,7 +604,10 @@ async def main():
             channels[id] = grpc.aio.insecure_channel(f"localhost:{calcular_porta(id)}")
 
     server = grpc.aio.server()
-    no_pb2_grpc.add_NoServicer_to_server(No(id=args.id), server)
+    no = No(id=args.id)
+
+    no_pb2_grpc.add_NoServicer_to_server(no, server)
+    no_pb2_grpc.add_ServidorServicer_to_server(no, server)
     server.add_insecure_port(f"[::]:{calcular_porta(args.id)}")
     await server.start()
 

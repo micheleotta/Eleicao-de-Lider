@@ -6,7 +6,7 @@ from no import calcular_porta
 def chamada_grpc(node_id, method, request, timeout=3):
     '''Cria um canal gRPC para o nó especificado e chama o método desejado com o request fornecido'''
     with grpc.insecure_channel(f"127.0.0.1:{calcular_porta(node_id)}") as channel:
-        stub = no_pb2_grpc.NoStub(channel)
+        stub = no_pb2_grpc.ServidorStub(channel)
         return getattr(stub, method)(request, timeout=timeout)
 
 # Gravação com Redirecionamento: envia solicitações de escrita ao líder

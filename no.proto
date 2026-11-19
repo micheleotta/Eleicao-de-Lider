@@ -1,7 +1,9 @@
 service No {
     rpc RequestVote (VoteRequest) returns (VoteResponse);
     rpc Fetch (FetchRequest) returns (FetchResponse);
+}
 
+service Servidor {
     rpc ClientWrite (WriteRequest) returns (WriteResponse);
     rpc ClientRead (ReadRequest) returns (ReadResponse);
 }
