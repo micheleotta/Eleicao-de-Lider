@@ -304,7 +304,7 @@ class No(no_pb2_grpc.NoServicer):
                         # Busca ativamente entradas no líder atual
                         for log in response.logs:
                             log_local = bd.get_log_entry(self.id, log.indice)
-                            # Verifica possíveis conflitos
+                            # Verifica possíveis conflitos em índice existente
                             if log_local is not None:
                                 if log_local.termo != log.termo or log_local.dado != log.dado:
                                     if log.indice <= self.indice_commit:
@@ -335,11 +335,9 @@ class No(no_pb2_grpc.NoServicer):
                             primeiro_excedente = ultimo_log_lider + 1
                             if primeiro_excedente <= self.indice_commit:
                                 raise Exception("O líder possui log menor que o índice já comitado localmente!")
-
                             bd.truncate_logs_from(self.id, primeiro_excedente)
-
                             print(
-                                f"\n[RECONCILIAÇÃO] Removendo entradas excedentes"
+                                f"\n[RESSINCRONIZAÇÃO] Removendo entradas excedentes"
                                 f"\n- Primeiro índice removido: {primeiro_excedente}"
                                 f"\n- Último índice do líder: {ultimo_log_lider}\n"
                             )
